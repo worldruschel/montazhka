@@ -4,6 +4,7 @@
 Команды:
   python tools/pipeline.py new <slug> [--format 16:9|9:16]
   python tools/pipeline.py voice <NNN> [--provider edge|openrouter|aitunnel|elevenlabs|openai] [--voice NAME]
+  python tools/pipeline.py transcribe <NNN> <media_file> [--language ru] [--no-copy]
   python tools/pipeline.py stills <NNN> <frame1> <frame2> ...
   python tools/pipeline.py render <NNN> [--resume] [--chunk-size 1200]
   python tools/pipeline.py sfx
@@ -32,12 +33,13 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from tools.tts import generate_voice, get_audio_duration  # noqa: E402
+from tools.tts import generate_voice, get_audio_duration, transcribe_audio  # noqa: E402
 
 VIDEO_DIR = ROOT_DIR / "video"
 VIDEOS_SRC_DIR = VIDEO_DIR / "src" / "videos"
 PUBLIC_DIR = VIDEO_DIR / "public"
 VIDEOS_WORK_DIR = ROOT_DIR / "videos"
+INBOX_DIR = ROOT_DIR / "inbox"
 OUT_DIR = ROOT_DIR / "out"
 STATE_FILE = ROOT_DIR / ".montazhka-state.json"
 
@@ -445,6 +447,122 @@ def cmd_voice(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Команда: transcribe (распознавание речи из снятого видео / аудио)
+# ---------------------------------------------------------------------------
+
+def probe_media_info(media_path: Path) -> dict:
+    proc = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "stream=codec_type,width,height,r_frame_rate:format=duration",
+            "-of", "json",
+            str(media_path),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    info = {"duration": 0.0, "width": 0, "height": 0, "fps": 0.0, "has_video": False}
+    if proc.returncode != 0:
+        return info
+    try:
+        parsed = json.loads(proc.stdout)
+        info["duration"] = float((parsed.get("format") or {}).get("duration") or 0.0)
+        for st in parsed.get("streams") or []:
+            if st.get("codec_type") == "video":
+                info["has_video"] = True
+                info["width"] = int(st.get("width") or 0)
+                info["height"] = int(st.get("height") or 0)
+                rate = str(st.get("r_frame_rate") or "0/1")
+                if "/" in rate:
+                    num_s, den_s = rate.split("/", 1)
+                    den = float(den_s)
+                    if den > 0:
+                        info["fps"] = round(float(num_s) / den, 2)
+                break
+    except Exception:
+        pass
+    return info
+
+
+def cmd_transcribe(args: argparse.Namespace) -> None:
+    nnn = norm_num(args.num)
+    work_dir = find_video_work_dir(nnn)
+
+    raw_path = Path(args.media)
+    if not raw_path.exists():
+        alt = INBOX_DIR / args.media
+        if alt.exists():
+            raw_path = alt
+        else:
+            raise SystemExit(
+                f"Файл не найден: {args.media} (проверили и {alt}). "
+                "Положите видео в папку inbox/ или укажите полный путь."
+            )
+
+    info = probe_media_info(raw_path)
+    pub_dir = PUBLIC_DIR / nnn
+    pub_dir.mkdir(parents=True, exist_ok=True)
+
+    copied_rel: Optional[str] = None
+    if info["has_video"] and not args.no_copy:
+        ext = raw_path.suffix.lower() or ".mp4"
+        dest_clip = pub_dir / f"clip{ext}"
+        if raw_path.resolve() != dest_clip.resolve():
+            shutil.copy2(raw_path, dest_clip)
+        copied_rel = f"{nnn}/clip{ext}"
+
+    # Извлекаем аудиодорожку 16kHz mono MP3 для быстрого и точного STT
+    tmp_audio = OUT_DIR / nnn / "source_audio.mp3"
+    tmp_audio.parent.mkdir(parents=True, exist_ok=True)
+    run_checked([
+        "ffmpeg", "-y",
+        "-i", str(raw_path),
+        "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+        str(tmp_audio),
+    ])
+
+    print(f"Распознавание речи из {raw_path.name}...")
+    data = transcribe_audio(tmp_audio, fps=FPS, language=args.language)
+    full_text = data.pop("text", "")
+
+    captions_path = VIDEOS_SRC_DIR / nnn / "captions.json"
+    captions_path.parent.mkdir(parents=True, exist_ok=True)
+    captions_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    if full_text:
+        (work_dir / "text.txt").write_text(full_text + "\n", encoding="utf-8")
+
+    try:
+        tmp_audio.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    print(
+        f"\nГотово! STT: {data['alignment']} | "
+        f"Длительность: {data['duration']} с ({data['durationInFrames']} кадров)"
+    )
+    if info["has_video"]:
+        print(f"Исходник: {info['width']}x{info['height']} @ {info['fps']} fps")
+    if copied_rel:
+        print(f"Скопирован в: video/public/{copied_rel}")
+        print(f"В Video.tsx:  <Footage src={{staticFile('{copied_rel}')}} dim={{0.35}} />")
+    print(f"Текст:    {work_dir / 'text.txt'}")
+    print(f"Тайминги: {captions_path}\n")
+
+    print(f"{'№':>4} | {'Время (с)':>13} | {'Кадр':>11} | Слово")
+    print("-" * 60)
+    for w in data["words"]:
+        t_range = f"{w['start']:5.2f}–{w['end']:5.2f}"
+        f_range = f"{w['startFrame']:4d}–{w['endFrame']:4d}"
+        print(f"{w['index']:4d} | {t_range:>13} | {f_range:>11} | {w['word']}")
+
+
+# ---------------------------------------------------------------------------
 # Команда: stills
 # ---------------------------------------------------------------------------
 
@@ -828,6 +946,13 @@ def main() -> None:
     p_voice.add_argument("--voice", default=None, help="Имя голоса")
     p_voice.add_argument("--model", default=None, help="Модель TTS")
     p_voice.set_defaults(func=cmd_voice)
+
+    p_tr = sub.add_parser("transcribe", help="Распознать речь из снятого видео/аудио и создать captions.json")
+    p_tr.add_argument("num", help="Номер ролика, например 001")
+    p_tr.add_argument("media", help="Путь к видео/аудио или имя файла в папке inbox/")
+    p_tr.add_argument("--language", default=None, help="Язык речи (например ru, en; по умолчанию из .env)")
+    p_tr.add_argument("--no-copy", action="store_true", help="Не копировать исходное видео в video/public/NNN/")
+    p_tr.set_defaults(func=cmd_transcribe)
 
     p_stills = sub.add_parser("stills", help="Снять контрольные кадры и склеить sheet.jpg")
     p_stills.add_argument("num", help="Номер ролика, например 001")

@@ -508,14 +508,17 @@ def _synthesize_elevenlabs(
 # Получение пословных таймингов (STT / выравнивание)
 # ---------------------------------------------------------------------------
 
-def _try_faster_whisper(audio_path: Path) -> Optional[List[Tuple[str, float, float]]]:
+def _try_faster_whisper(
+    audio_path: Path,
+    language: Optional[str] = None,
+) -> Optional[List[Tuple[str, float, float]]]:
     try:
         from faster_whisper import WhisperModel
     except ImportError:
         return None
 
     model_name = os.getenv("WHISPER_MODEL", "small")
-    lang = os.getenv("WHISPER_LANGUAGE", "ru") or None
+    lang = (language if language is not None else os.getenv("WHISPER_LANGUAGE", "ru")).strip() or None
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, _ = model.transcribe(
         str(audio_path),
@@ -534,32 +537,163 @@ def _try_faster_whisper(audio_path: Path) -> Optional[List[Tuple[str, float, flo
     return words if words else None
 
 
-def _try_openai_whisper(audio_path: Path) -> Optional[List[Tuple[str, float, float]]]:
+def _try_aitunnel_whisper(
+    audio_path: Path,
+    language: Optional[str] = None,
+) -> Optional[List[Tuple[str, float, float]]]:
+    api_key = os.getenv("AITUNNEL_API_KEY", "").strip()
+    if not api_key:
+        return None
+    base_url = os.getenv("AITUNNEL_BASE_URL", "https://api.aitunnel.ru/v1").strip().rstrip("/")
+    lang = (language if language is not None else os.getenv("WHISPER_LANGUAGE", "ru")).strip()
+    form_data: dict = {
+        "model": os.getenv("AITUNNEL_STT_MODEL", "whisper-1"),
+        "response_format": "verbose_json",
+        "timestamp_granularities[]": "word",
+    }
+    if lang:
+        form_data["language"] = lang
+    try:
+        with httpx.Client(timeout=180.0) as client:
+            with open(audio_path, "rb") as f:
+                resp = client.post(
+                    f"{base_url}/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    data=form_data,
+                    files={"file": (audio_path.name, f, "audio/mpeg")},
+                )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        raw_words = data.get("words") or []
+        result: List[Tuple[str, float, float]] = []
+        for w in raw_words:
+            token = str(w.get("word", "")).strip()
+            if token:
+                result.append((token, float(w["start"]), float(w["end"])))
+        if result:
+            return result
+        plain_text = str(data.get("text", "")).strip()
+        if plain_text:
+            dur = get_audio_duration(audio_path)
+            return _align_with_speech_intervals(plain_text, audio_path, dur)
+    except Exception:
+        return None
+    return None
+
+
+def _try_openai_whisper(
+    audio_path: Path,
+    language: Optional[str] = None,
+) -> Optional[List[Tuple[str, float, float]]]:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None
-    with httpx.Client(timeout=180.0) as client:
-        with open(audio_path, "rb") as f:
-            resp = client.post(
-                "https://api.openai.com/v1/audio/transcriptions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                data={
-                    "model": "whisper-1",
-                    "response_format": "verbose_json",
-                    "timestamp_granularities[]": "word",
-                },
-                files={"file": (audio_path.name, f, "audio/mpeg")},
-            )
-    if resp.status_code != 200:
+    lang = (language if language is not None else os.getenv("WHISPER_LANGUAGE", "ru")).strip()
+    form_data: dict = {
+        "model": "whisper-1",
+        "response_format": "verbose_json",
+        "timestamp_granularities[]": "word",
+    }
+    if lang:
+        form_data["language"] = lang
+    try:
+        with httpx.Client(timeout=180.0) as client:
+            with open(audio_path, "rb") as f:
+                resp = client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    data=form_data,
+                    files={"file": (audio_path.name, f, "audio/mpeg")},
+                )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        raw_words = data.get("words") or []
+        result: List[Tuple[str, float, float]] = []
+        for w in raw_words:
+            token = str(w.get("word", "")).strip()
+            if token:
+                result.append((token, float(w["start"]), float(w["end"])))
+        if result:
+            return result
+        plain_text = str(data.get("text", "")).strip()
+        if plain_text:
+            dur = get_audio_duration(audio_path)
+            return _align_with_speech_intervals(plain_text, audio_path, dur)
+    except Exception:
         return None
-    data = resp.json()
-    raw_words = data.get("words") or []
-    result: List[Tuple[str, float, float]] = []
-    for w in raw_words:
-        token = str(w.get("word", "")).strip()
-        if token:
-            result.append((token, float(w["start"]), float(w["end"])))
-    return result if result else None
+    return None
+
+
+def _try_openrouter_stt(
+    audio_path: Path,
+    language: Optional[str] = None,
+) -> Optional[List[Tuple[str, float, float]]]:
+    """
+    Распознаёт речь из аудио через мультимодальную модель OpenRouter (по умолчанию google/gemini-2.5-flash)
+    и выравнивает слова по речевым интервалам.
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    model = os.getenv("OPENROUTER_STT_MODEL", "google/gemini-2.5-flash").strip()
+    lang = (language if language is not None else os.getenv("WHISPER_LANGUAGE", "ru")).strip()
+    audio_b64 = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+    ext = audio_path.suffix.lower().lstrip(".")
+    fmt = "wav" if ext == "wav" else "mp3"
+
+    prompt = (
+        "Транскрибируй речь из этого аудио строго дословно, сохраняя пунктуацию. "
+        "Верни ТОЛЬКО текст речи без каких-либо комментариев, меток и пояснений."
+    )
+    if lang:
+        prompt += f" Основной язык речи: {lang}."
+
+    try:
+        with httpx.Client(timeout=180.0) as client:
+            resp = client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/worldruschel/montazhka",
+                    "X-Title": "Montazhka",
+                },
+                json={
+                    "model": model,
+                    "temperature": 0,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": audio_b64,
+                                        "format": fmt,
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return None
+        text = str((choices[0].get("message") or {}).get("content") or "").strip()
+        if not text:
+            return None
+        dur = get_audio_duration(audio_path)
+        return _align_with_speech_intervals(text, audio_path, dur)
+    except Exception:
+        return None
 
 
 def _detect_speech_intervals(audio_path: Path, total_duration: float) -> List[Tuple[float, float]]:
@@ -715,6 +849,10 @@ def generate_voice(
             raw_timings = _try_faster_whisper(out_mp3)
             if raw_timings:
                 align_method = "faster-whisper"
+        if not raw_timings and stt_pref in ("auto", "aitunnel"):
+            raw_timings = _try_aitunnel_whisper(out_mp3)
+            if raw_timings:
+                align_method = "aitunnel-whisper"
         if not raw_timings and stt_pref in ("auto", "openai"):
             raw_timings = _try_openai_whisper(out_mp3)
             if raw_timings:
@@ -744,5 +882,76 @@ def generate_voice(
         "fps": fps,
         "duration": round(duration, 3),
         "durationInFrames": duration_frames,
+        "words": [w.to_dict() for w in words],
+    }
+
+
+def transcribe_audio(
+    audio_path: Path,
+    fps: int = 30,
+    language: Optional[str] = None,
+) -> dict:
+    """
+    Распознаёт речь из аудиофайла (или извлечённой дорожки видео) и возвращает данные для captions.json + текст.
+    Цепочка STT: faster-whisper (локально бесплатно) -> aitunnel -> openai -> openrouter.
+    """
+    duration = get_audio_duration(audio_path)
+    duration_frames = max(1, int(round(duration * fps)))
+    stt_pref = os.getenv("STT_PROVIDER", "auto").strip().lower()
+
+    raw_timings: Optional[List[Tuple[str, float, float]]] = None
+    stt_method = ""
+
+    if stt_pref in ("auto", "faster-whisper"):
+        raw_timings = _try_faster_whisper(audio_path, language=language)
+        if raw_timings:
+            stt_method = "faster-whisper"
+
+    if not raw_timings and stt_pref in ("auto", "aitunnel"):
+        raw_timings = _try_aitunnel_whisper(audio_path, language=language)
+        if raw_timings:
+            stt_method = "aitunnel-whisper"
+
+    if not raw_timings and stt_pref in ("auto", "openai"):
+        raw_timings = _try_openai_whisper(audio_path, language=language)
+        if raw_timings:
+            stt_method = "openai-whisper"
+
+    if not raw_timings and stt_pref in ("auto", "openrouter"):
+        raw_timings = _try_openrouter_stt(audio_path, language=language)
+        if raw_timings:
+            stt_method = "openrouter-stt"
+
+    if not raw_timings:
+        raise RuntimeError(
+            "Не удалось распознать речь из видео: не установлен локальный faster-whisper "
+            "и не заданы ключи STT в .env (AITUNNEL_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY).\n"
+            "Установите локальный бесплатный Whisper: pip install faster-whisper "
+            "либо пропишите ключ AI Tunnel / OpenAI / OpenRouter в .env."
+        )
+
+    words: List[WordTiming] = []
+    for idx, (token, start_s, end_s) in enumerate(raw_timings):
+        sf = max(0, int(round(start_s * fps)))
+        ef = max(sf + 1, int(round(end_s * fps)))
+        words.append(
+            WordTiming(
+                index=idx,
+                word=token,
+                start=start_s,
+                end=end_s,
+                start_frame=sf,
+                end_frame=ef,
+            )
+        )
+
+    full_text = " ".join(w.word for w in words)
+    return {
+        "provider": "source-video",
+        "alignment": stt_method,
+        "fps": fps,
+        "duration": round(duration, 3),
+        "durationInFrames": duration_frames,
+        "text": full_text,
         "words": [w.to_dict() for w in words],
     }

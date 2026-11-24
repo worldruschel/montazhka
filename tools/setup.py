@@ -120,6 +120,17 @@ def main() -> None:
     run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
     run([str(py), "-m", "pip", "install", "-r", str(ROOT_DIR / "requirements.txt")])
 
+    # Опционально ставим faster-whisper для локального бесплатного распознавания речи из видео
+    print("2b. Пробуем установить faster-whisper (локальный бесплатный STT для видео)...")
+    fw_proc = subprocess.run([str(py), "-m", "pip", "install", "faster-whisper"])
+    if fw_proc.returncode != 0:
+        print(
+            "   ⚠ faster-whisper не установился на этой версии Python/ОС — это не критично: "
+            "распознавание видео будет работать через облачный STT (AITunnel / OpenAI / OpenRouter)."
+        )
+
+    (ROOT_DIR / "inbox").mkdir(parents=True, exist_ok=True)
+
     if not (VIDEO_DIR / "node_modules").exists():
         print("3. Устанавливаем Node-зависимости Remotion (video/)...")
         run([npm_exe(), "install"], cwd=VIDEO_DIR)

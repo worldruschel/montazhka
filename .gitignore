@@ -7,6 +7,10 @@
 MONTAZHKA_PROFILE.md
 _local_archive/
 
+# User raw video clips in inbox (keep README.txt)
+inbox/*
+!inbox/README.txt
+
 # Python
 .venv/
 __pycache__/

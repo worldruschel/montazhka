@@ -18,11 +18,16 @@ description: Создаёт и рендерит видеоролик в лока
 3. Заполни `videos/NNN-slug/SCRIPT.md` и `videos/NNN-slug/text.txt` (и `voice.txt`, если нужны ударения).
 4. Покажи сценарий и текст пользователю и **дождись явного «ок»** перед запуском озвучки.
 
-## Этап 2. Озвучка и сборка сцен (`Video.tsx`)
-1. Сгенерируй озвучку и `captions.json` (провайдер и голос берутся из `.env`):
-   ```bash
-   <PY> tools/pipeline.py voice NNN
-   ```
+## Этап 2. Озвучка (или распознавание речи из видео) и сборка сцен (`Video.tsx`)
+1. Выбери источник речи:
+   - **Озвучка из текста** (провайдер и голос из `.env`):
+     ```bash
+     <PY> tools/pipeline.py voice NNN
+     ```
+   - **Снятое видео с речью («говорящая голова» / Reels):** исходник пользователь кладёт в `inbox/` (не прикрепляя в чат). Распознай речь и получи точные пословные тайминги одной командой:
+     ```bash
+     <PY> tools/pipeline.py transcribe NNN inbox/my_clip.mp4
+     ```
 2. Изучи таблицу «№ — время — кадр — слово».
 3. Напиши `video/src/videos/NNN/Video.tsx`:
    - Используй `Stage`, `Intro`, `Outro`, `AlertScreen`, `Card`, `StepList`, `Captions`, `Footage`, `Scene3D`, `GlbModel`, `cues` из `../../ui`.
