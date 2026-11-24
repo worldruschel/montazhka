@@ -18,6 +18,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,6 +246,16 @@ def _synthesize_openrouter(
     return raw_wav, None
 
 
+_EDGE_FALLBACK_VOICES = {
+    "ru-RU-DmitryNeural": "ru-RU-SvetlanaNeural",
+    "ru-RU-SvetlanaNeural": "ru-RU-DmitryNeural",
+    "en-US-GuyNeural": "en-US-AriaNeural",
+    "en-US-AriaNeural": "en-US-GuyNeural",
+    "en-US-AndrewNeural": "en-US-EmmaNeural",
+    "en-US-EmmaNeural": "en-US-AndrewNeural",
+}
+
+
 def _synthesize_edge(
     text: str,
     raw_dir: Path,
@@ -252,12 +263,12 @@ def _synthesize_edge(
 ) -> Tuple[Path, Optional[List[Tuple[str, float, float]]]]:
     import edge_tts
 
-    voice = voice or os.getenv("EDGE_TTS_VOICE", "ru-RU-DmitryNeural")
+    primary_voice = (voice or os.getenv("EDGE_TTS_VOICE", "ru-RU-SvetlanaNeural")).strip()
     rate = os.getenv("EDGE_TTS_RATE", "+0%")
     raw_mp3 = raw_dir / "voice_raw.mp3"
 
-    async def _run() -> List[Tuple[str, float, float]]:
-        communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
+    async def _run(v: str) -> List[Tuple[str, float, float]]:
+        communicate = edge_tts.Communicate(text, voice=v, rate=rate)
         boundaries: List[Tuple[str, float, float]] = []
         with open(raw_mp3, "wb") as f:
             async for chunk in communicate.stream():
@@ -272,8 +283,48 @@ def _synthesize_edge(
                         boundaries.append((word, start_s, start_s + dur_s))
         return boundaries
 
-    words = asyncio.run(_run())
-    return raw_mp3, (words if words else None)
+    fallback_voice = _EDGE_FALLBACK_VOICES.get(primary_voice)
+    attempts: List[Tuple[str, float]] = [(primary_voice, 0.0)]
+    if fallback_voice and fallback_voice != primary_voice:
+        attempts.append((fallback_voice, 2.0))
+        attempts.append((fallback_voice, 4.0))
+    else:
+        attempts.append((primary_voice, 2.5))
+
+    last_err: Optional[Exception] = None
+    for idx, (candidate_voice, delay) in enumerate(attempts):
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            words = asyncio.run(_run(candidate_voice))
+            if raw_mp3.exists() and raw_mp3.stat().st_size > 256:
+                if candidate_voice != primary_voice:
+                    print(
+                        f"\n[MONTAZHKA_EDGE_FALLBACK] Голос {primary_voice} на стороне Microsoft вернул ошибку ({last_err}). "
+                        f"Автоматически использован резервный голос {candidate_voice}. "
+                        "Явно предупреди пользователя о нестабильности бесплатного Microsoft Edge TTS и предложи "
+                        "переключиться на платную озвучку через OpenRouter или AITunnel."
+                    )
+                return raw_mp3, (words if words else None)
+            raise RuntimeError("Edge TTS вернул пустой аудиофайл")
+        except Exception as exc:
+            last_err = exc
+            try:
+                raw_mp3.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if idx == 0 and fallback_voice:
+                print(
+                    f"⚠ Edge TTS ({candidate_voice}) не вернул аудио ({exc}). "
+                    f"Пробую резервный голос {fallback_voice} через 2 с..."
+                )
+
+    raise RuntimeError(
+        f"[MONTAZHKA_EDGE_ERROR] Бесплатный сервис Microsoft Edge TTS не вернул аудио ({last_err}). "
+        "НЕ запускай серии тестовых запросов к Microsoft (это вызывает временную блокировку IP / rate-limit). "
+        "Явно сообщи пользователю о проблеме на стороне Microsoft Edge TTS и предложи переключиться на стабильную "
+        "платную озвучку через OpenRouter (нужен VPN) или AITunnel (без VPN, оплата в рублях)."
+    )
 
 
 def _synthesize_openai(
