@@ -1,0 +1,30 @@
+# Environment & secrets
+.env
+.env.local
+
+# Local user onboarding state & custom profile
+.montazhka-state.json
+MONTAZHKA_PROFILE.md
+_local_archive/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Node & Remotion
+node_modules/
+video/node_modules/
+video/.remotion/
+video/build/
+.remotion-tmp/
+
+# Render outputs & intermediate artifacts
+out/
+*.log
+
+# Generated media (keep public/sfx and demo 001 assets if needed)
+video/public/*/voice.mp3
+video/public/*/voice_raw.*
+videos/*/*.mp4

@@ -1,0 +1,77 @@
+{
+  "id": "objaverse-5251dff3c6704c998be854ac862f5b95",
+  "name": "Camera",
+  "dataset": "objaverse",
+  "family": "Electronics",
+  "license": "CC-BY-4.0",
+  "source_license": "CC-BY-4.0",
+  "license_status": "ok",
+  "attribution": "\"Camera\" by HPZ620, https://sketchfab.com/3d-models/5251dff3c6704c998be854ac862f5b95, CC-BY-4.0; modified: rewritten as a sand3d program",
+  "page": "https://sandflow-sand3d-explorer.hf.space/o/objaverse-5251dff3c6704c998be854ac862f5b95",
+  "glb": {
+    "bytes": 300836,
+    "nodes": 30,
+    "meshes": 18,
+    "triangles": 12514,
+    "materials": [
+      "plastic #545253",
+      "glass #242627 roughness=0.25",
+      "fabric #383738",
+      "rubber #5b595a",
+      "plastic #605e5f",
+      "rubber #565456",
+      "glass #101113 roughness=0.2",
+      "plastic #8b3032",
+      "plastic #5e5c5e",
+      "plastic #666465",
+      "rubber #514f50",
+      "glass #111312"
+    ],
+    "extensions": [
+      "KHR_materials_transmission",
+      "KHR_materials_sheen"
+    ],
+    "animations": 0,
+    "min": [
+      -0.03600000432990608,
+      0.0025000001187436283,
+      -0.0595000066407958
+    ],
+    "max": [
+      0.10400002869219337,
+      0.12300000584218651,
+      0.08500000403728336
+    ],
+    "size": [
+      0.14000003302209946,
+      0.12050000572344288,
+      0.14450001067807916
+    ],
+    "center": [
+      0.034000012181143645,
+      0.06275000298046507,
+      0.01274999869824378
+    ],
+    "parts": [
+      "bezel",
+      "screen",
+      "strap.001",
+      "strap",
+      "grip",
+      "housing",
+      "barrel",
+      "glass",
+      "mount",
+      "red_band",
+      "button",
+      "selector",
+      "upper_button",
+      "hot_shoe",
+      "mode_dial",
+      "shutter_dial",
+      "eyecup",
+      "finder_glass"
+    ],
+    "joints": []
+  }
+}

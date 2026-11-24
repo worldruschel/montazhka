@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "sand3d": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/siliconbag/sand3d-mcp",
+        "sand3d-mcp"
+      ]
+    }
+  }
+}
